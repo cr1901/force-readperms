@@ -7,8 +7,17 @@ import argparse
 import subprocess
 import pathlib
 
+logger = logging.getLogger("force-readperms")
 
-def main(dir_root, username, limit):
+
+def main(dir_root, username, limit, verbose):
+    if verbose:
+        loglevel = logging.DEBUG
+    else:
+        loglevel = logging.INFO
+
+    logging.basicConfig(level=loglevel)
+
     err_list = []
     def collect_errors(f):
         fn = pathlib.Path(f.filename)
@@ -35,7 +44,7 @@ def main(dir_root, username, limit):
             count += len(f)
             if count > 4096:
                 base_cmd.extend(arg_buf)
-                print(" ".join(base_cmd))
+                logger.info(" Running {}".format(" ".join(base_cmd)))
                 subprocess.run(base_cmd)
 
                 base_cmd = ["sudo", "setfacl", "-m", f"user:{username}:rX"]
@@ -46,7 +55,7 @@ def main(dir_root, username, limit):
 
         if arg_buf:
             base_cmd.extend(arg_buf)
-            print(" ".join(base_cmd))
+            logger.info(" Running {}".format(" ".join(base_cmd)))
             subprocess.run(base_cmd)
 
         err_list.clear()
@@ -63,7 +72,7 @@ def main(dir_root, username, limit):
             # Figure out whether the directory itself doesn't have read
             # permissions, or the parent doesn't have execute permissions.
             try:
-                mode = os.stat(dirn / f).st_mode
+                mode = os.stat(dirn / f, follow_symlinks=False).st_mode
             except PermissionError:
                 if str(dirn) not in err_list:
                     err_list.append(str(dirn))
@@ -73,8 +82,11 @@ def main(dir_root, username, limit):
                 if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
                     with open(dirn / f, "rb"):
                         pass
-                elif stat.S_ISFIFO(mode) or stat.S_ISLNK(mode):
+                elif stat.S_ISFIFO(mode):
+                    logger.debug(" Opening FIFO {}".format(str(dirn / f)))
                     os.open(dirn / f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                # TODO: ISCHR/ISBLK
+            
             except PermissionError as e:
                 err_list.append(str(dirn / f))
 
@@ -87,7 +99,7 @@ def main(dir_root, username, limit):
             count += len(f)
             if count > 4096:
                 base_cmd.extend(arg_buf)
-                print(" ".join(base_cmd))
+                logger.info(" Running {}".format(" ".join(base_cmd)))
                 subprocess.run(base_cmd)
 
                 base_cmd = ["sudo", "setfacl", "-m", f"user:{username}:rX"]
@@ -98,7 +110,7 @@ def main(dir_root, username, limit):
 
         if arg_buf:
             base_cmd.extend(arg_buf)
-            print(" ".join(base_cmd))
+            logger.info(" Running {}".format(" ".join(base_cmd)))
             subprocess.run(base_cmd)
 
         err_list.clear()
@@ -108,7 +120,7 @@ def main(dir_root, username, limit):
                 # Figure out whether the directory itself doesn't have read
                 # permissions, or the parent doesn't have execute permissions.
                 try:
-                    mode = os.stat(dirn / f).st_mode
+                    mode = os.stat(dirn / f, follow_symlinks=False).st_mode
                 except PermissionError:
                     if str(dirn) not in err_list:
                         err_list.append(str(dirn))
@@ -118,8 +130,11 @@ def main(dir_root, username, limit):
                     if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
                         with open(dirn / f, "rb"):
                             pass
-                    elif stat.S_ISFIFO(mode) or stat.S_ISLNK(mode):
+                    elif stat.S_ISFIFO(mode):
+                        logger.debug(" Opening FIFO {}".format(str(dirn / f)))
                         os.open(dirn / f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    # TODO: ISCHR/ISBLK
+                
                 except PermissionError as e:
                     err_list.append(str(dirn / f))
 
@@ -130,8 +145,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Force read permissions of a file tree using read ACLs")
     parser.add_argument("dir_root")
     parser.add_argument("username")
+    parser.add_argument("-v", action="store_true", help="verbose mode")
     parser.add_argument("-l", default=50, help="iteration limit")
     args = parser.parse_args()
 
-    main(args.dir_root, args.username, args.l)
+    main(args.dir_root, args.username, args.l, args.v)
 
