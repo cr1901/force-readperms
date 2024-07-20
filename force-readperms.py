@@ -102,6 +102,11 @@ def main(dir_root, username, limit, verbose):
                 logger.info(" Running {}".format(" ".join(base_cmd)))
                 subprocess.run(base_cmd)
 
+                # TODO: Edge case: "setfacl -m u::rX foo" (chmod +r foo?) may
+                # be necessary if we are the owner of the file, and the file
+                # doesn't have read perms for owner.
+                #
+                # In POSIX ACLs, owner perms override named user perms.
                 base_cmd = ["sudo", "setfacl", "-m", f"user:{username}:rX"]
                 arg_buf = []
                 count = 0
