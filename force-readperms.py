@@ -8,10 +8,50 @@ import argparse
 import subprocess
 import pathlib
 
+from pwd import getpwnam
+
 logger = logging.getLogger("force-readperms")
 
 
+def walk_dirs_and_examine_files(dir_root, username, err_list):
+    username_uid = getpwnam(username).pw_uid
+
+    for root, _, files in os.walk(dir_root):
+        dirn = pathlib.Path(root)
+        for f in files:
+            # Figure out whether the file itself doesn't have read
+            # permissions, or the parent directory doesn't have execute
+            # permissions.
+            try:
+                fileinfo = os.stat(dirn / f, follow_symlinks=False)
+                owner = fileinfo.st_uid
+                mode = fileinfo.st_mode
+
+                if owner == username_uid and ((mode & 0o400) == 0):
+                    logger.info(f" {username} owns {str(dirn / f)}, adding read perms via os.chmod")
+                    os.chmod(dirn / f, mode | 0o400, follow_symlinks=False)
+                    continue
+
+            except PermissionError:
+                if str(dirn) not in err_list:
+                    err_list.append(str(dirn))
+                continue
+
+            try:
+                if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
+                    with open(dirn / f, "rb"):
+                        pass
+                elif stat.S_ISFIFO(mode):
+                    logger.debug(" Opening FIFO {}".format(str(dirn / f)))
+                    os.open(dirn / f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                # TODO: ISCHR/ISBLK
+            
+            except PermissionError as e:
+                err_list.append(str(dirn / f))
+
+
 def main(dir_root, username, limit, verbose):
+    username_uid = getpwnam(username).pw_uid
     if verbose:
         loglevel = logging.DEBUG
     else:
@@ -32,12 +72,21 @@ def main(dir_root, username, limit, verbose):
         # Figure out whether the directory itself doesn't have read
         # permissions, or the parent doesn't have execute permissions.
         try:
-            os.stat(fn)
+            dirinfo = os.stat(fn)
+            owner = dirinfo.st_uid
+            mode = dirinfo.st_mode
         except PermissionError:
+            logger.debug(f" Do not have permissions to read parent directory {str(fn.parent)}")
             err_list.append(str(fn.parent))
         else:
-            err_list.append(str(fn))
+            if owner == username_uid and ((mode & 0o400) == 0):
+                # In POSIX ACLs, owner perms override named user perms.
+                logger.info(f" {username} owns {str(fn)}, adding read perms via os.chmod")
+                os.chmod(fn, dirinfo.st_mode | 0o400, follow_symlinks=False)
+            else:
+                err_list.append(str(fn))
 
+    logger.debug(" Finding directories which need read permissions forced")
     for _ in os.walk(dir_root, onerror=collect_errors):
         pass
 
@@ -80,29 +129,8 @@ def main(dir_root, username, limit, verbose):
 
     assert len(err_list) == 0
 
-    for root, _, files in os.walk(dir_root):
-        dirn = pathlib.Path(root)
-        for f in files:
-            # Figure out whether the directory itself doesn't have read
-            # permissions, or the parent doesn't have execute permissions.
-            try:
-                mode = os.stat(dirn / f, follow_symlinks=False).st_mode
-            except PermissionError:
-                if str(dirn) not in err_list:
-                    err_list.append(str(dirn))
-                continue
-
-            try:
-                if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
-                    with open(dirn / f, "rb"):
-                        pass
-                elif stat.S_ISFIFO(mode):
-                    logger.debug(" Opening FIFO {}".format(str(dirn / f)))
-                    os.open(dirn / f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                # TODO: ISCHR/ISBLK
-            
-            except PermissionError as e:
-                err_list.append(str(dirn / f))
+    logger.debug(" Finding files which need read permissions forced")
+    walk_dirs_and_examine_files(dir_root, username, err_list)
 
     loop_count = 0
     while err_list and loop_count < limit:
@@ -116,11 +144,6 @@ def main(dir_root, username, limit, verbose):
                 logger.info(" Running {}".format(" ".join(base_cmd)))
                 subprocess.run(base_cmd)
 
-                # TODO: Edge case: "setfacl -m u::rX foo" (chmod +r foo?) may
-                # be necessary if we are the owner of the file, and the file
-                # doesn't have read perms for owner.
-                #
-                # In POSIX ACLs, owner perms override named user perms.
                 base_cmd = ["sudo", "setfacl", "-m", f"user:{username}:rX"]
                 arg_buf = []
                 count = 0
@@ -133,29 +156,7 @@ def main(dir_root, username, limit, verbose):
             subprocess.run(base_cmd)
 
         err_list.clear()
-        for root, _, files in os.walk(dir_root):
-            dirn = pathlib.Path(root)
-            for f in files:
-                # Figure out whether the directory itself doesn't have read
-                # permissions, or the parent doesn't have execute permissions.
-                try:
-                    mode = os.stat(dirn / f, follow_symlinks=False).st_mode
-                except PermissionError:
-                    if str(dirn) not in err_list:
-                        err_list.append(str(dirn))
-                    continue
-
-                try:
-                    if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
-                        with open(dirn / f, "rb"):
-                            pass
-                    elif stat.S_ISFIFO(mode):
-                        logger.debug(" Opening FIFO {}".format(str(dirn / f)))
-                        os.open(dirn / f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                    # TODO: ISCHR/ISBLK
-                
-                except PermissionError as e:
-                    err_list.append(str(dirn / f))
+        walk_dirs_and_examine_files(dir_root, username, err_list)
 
         loop_count += 1   
 
