@@ -3,6 +3,7 @@
 import logging
 import os
 import stat
+import sys
 import argparse
 import subprocess
 import pathlib
@@ -17,10 +18,16 @@ def main(dir_root, username, limit, verbose):
         loglevel = logging.INFO
 
     logging.basicConfig(level=loglevel)
+    single_file = 0
 
     err_list = []
     def collect_errors(f):
         fn = pathlib.Path(f.filename)
+
+        if isinstance(f, NotADirectoryError):
+            nonlocal single_file
+            logger.debug(" {} is a file, not a directory".format(f.filename))
+            single_file = str(fn)
 
         # Figure out whether the directory itself doesn't have read
         # permissions, or the parent doesn't have execute permissions.
@@ -33,6 +40,13 @@ def main(dir_root, username, limit, verbose):
 
     for _ in os.walk(dir_root, onerror=collect_errors):
         pass
+
+    if single_file:
+        cmd = ["sudo", "setfacl", "-m", f"user:{username}:rX", single_file]
+        logger.info(" Running {}".format(" ".join(cmd)))
+        subprocess.run(cmd)
+        sys.exit(0)
+
 
     arg_buf = []
     loop_count = 0
